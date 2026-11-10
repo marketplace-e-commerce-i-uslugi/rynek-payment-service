@@ -1,0 +1,231 @@
+package pl.rynek.payment.payments;
+
+import java.time.Clock;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.regex.Pattern;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.http.HttpStatus;
+import org.springframework.orm.ObjectOptimisticLockingFailureException;
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
+import org.springframework.web.server.ResponseStatusException;
+import pl.rynek.payment.clients.OrderClient;
+import pl.rynek.payment.clients.OrderClient.MarkPaid;
+import pl.rynek.payment.clients.OrderClient.OrderInfo;
+import pl.rynek.payment.provider.PaymentProvider;
+
+/**
+ * Płatności za zamówienia. Po udanej płatności zamówienia są oznaczane jako opłacone w order-service; jeśli order-service
+ * nie odpowiada, próba jest ponawiana co minutę ({@link #confirmPending()}). Zaliczki za rezerwacje jeszcze nie działają.
+ */
+@Service
+public class PaymentService {
+
+    private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
+    private static final Pattern BLIK_CODE = Pattern.compile("\\d{6}");
+    static final int MAX_REFERENCES = 20;
+
+    private final PaymentRepository payments;
+    private final OrderClient orders;
+    private final PaymentProvider provider;
+    private final TransactionTemplate transaction;
+    private final Clock clock;
+
+    public PaymentService(PaymentRepository payments, OrderClient orders, PaymentProvider provider,
+                          PlatformTransactionManager transactions, Clock clock) {
+        this.payments = payments;
+        this.orders = orders;
+        this.provider = provider;
+        this.transaction = new TransactionTemplate(transactions);
+        this.clock = clock;
+    }
+
+    public PaymentProvider provider() {
+        return provider;
+    }
+
+    /**
+     * {@code referenceId}: id zamówień rozdzielone przecinkami (zakup z koszyka od kilku sprzedawców). Ponowienie z tym
+     * samym Idempotency-Key zwraca tę samą płatność. Nowa płatność zastępuje rozpoczęte i niedokończone płatności za
+     * te same zamówienia, więc zamówienia nie da się opłacić dwa razy.
+     */
+    public Payment create(UUID buyerId, String idempotencyKey, ReferenceType type, String referenceIds, PaymentMethod method) {
+        if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 100) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Brak nagłówka Idempotency-Key (do 100 znaków).");
+        }
+        Optional<Payment> earlier = payments.findByBuyerIdAndIdempotencyKey(buyerId, idempotencyKey);
+        if (earlier.isPresent()) {
+            return earlier.get();
+        }
+        if (type == ReferenceType.BOOKING) {
+            throw unprocessable("Płatności za rezerwacje jeszcze nie obsługujemy.");
+        }
+        List<UUID> ids = parse(referenceIds);
+        long amount = 0;
+        for (UUID id : ids) {
+            OrderInfo order = orders.order(id).filter(o -> o.buyerId().equals(buyerId))
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy tego zamówienia."));
+            if (!order.awaitingPayment()) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Zamówienie " + order.number() + " nie czeka już na płatność.");
+            }
+            amount += order.total();
+        }
+        Payment payment = new Payment(buyerId, type, ids, amount, method, provider.name(), idempotencyKey, clock.instant());
+        try {
+            return transaction.execute(status -> {
+                payments.findOpenFor(ids).forEach(p -> p.fail("Zastąpiona nową płatnością.", clock.instant()));
+                return payments.saveAndFlush(payment);
+            });
+        } catch (DataIntegrityViolationException e) {
+            return payments.findByBuyerIdAndIdempotencyKey(buyerId, idempotencyKey).orElseThrow(() -> e);
+        }
+    }
+
+    public Payment get(UUID buyerId, UUID paymentId) {
+        return payments.findById(paymentId).filter(p -> p.getBuyerId().equals(buyerId))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy tej płatności."));
+    }
+
+    /**
+     * Kod BLIK. Odrzucony kod daje 422, a płatność czeka na kolejny (najwyżej {@value Payment#MAX_BLIK_ATTEMPTS} próby).
+     */
+    public Payment confirmBlik(UUID buyerId, UUID paymentId, String code) {
+        Payment payment = get(buyerId, paymentId);
+        if (payment.getStatus() != PaymentStatus.WAITING_FOR_BLIK) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, payment.getStatus() == PaymentStatus.SUCCEEDED
+                    ? "Ta płatność jest już opłacona." : "Ta płatność nie czeka na kod BLIK. Zacznij płatność od nowa.");
+        }
+        if (code == null || !BLIK_CODE.matcher(code.trim()).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Kod BLIK ma 6 cyfr.");
+        }
+        if (provider.authorizeBlik(paymentId, payment.getAmount(), code.trim())) {
+            return settle(paymentId, true, null);
+        }
+        boolean canRetry = change(paymentId, p -> {
+            if (p.getStatus() != PaymentStatus.WAITING_FOR_BLIK) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, "Ta płatność nie czeka już na kod BLIK.");
+            }
+            return p.rejectBlik(clock.instant());
+        });
+        throw unprocessable(canRetry ? "Bank odrzucił kod BLIK. Wygeneruj nowy kod i spróbuj ponownie."
+                : "Bank odrzucił kod BLIK " + Payment.MAX_BLIK_ATTEMPTS + " razy. Zacznij płatność od nowa.");
+    }
+
+    /** Wynik od dostawcy (webhook, strona symulatora). Płatność już rozliczona nie zmienia się (webhook bywa ponawiany). */
+    public Payment providerResult(UUID paymentId, boolean succeeded) {
+        Payment payment = payments.findById(paymentId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy tej płatności."));
+        if (!payment.getStatus().open()) {
+            return payment;
+        }
+        return settle(paymentId, succeeded, succeeded ? null : "Dostawca płatności odrzucił płatność.");
+    }
+
+    /**
+     * Rozliczenie płatności w toku. Przed zaksięgowaniem sprawdza, czy zamówienia nadal czekają na płatność (mogły wygasnąć
+     * albo zostać anulowane); jeśli nie, płatność jest nieudana i pieniądze nie są pobierane.
+     */
+    private Payment settle(UUID paymentId, boolean succeeded, String reason) {
+        Payment payment = payments.findById(paymentId).orElseThrow();
+        String rejected = succeeded ? notAwaiting(payment) : null;
+        Payment settled = change(paymentId, p -> {
+            if (!p.getStatus().open()) {
+                return p;
+            }
+            if (!succeeded) {
+                p.fail(reason, clock.instant());
+            } else if (rejected != null) {
+                p.fail(rejected, clock.instant());
+            } else {
+                p.succeed(clock.instant());
+            }
+            return p;
+        });
+        if (settled.getStatus() == PaymentStatus.SUCCEEDED) {
+            return confirmOrders(settled.getId());
+        }
+        return settled;
+    }
+
+    /** Ponawia oznaczenie zamówień jako opłaconych dla udanych płatności, których order-service jeszcze nie przyjął. */
+    @Scheduled(fixedDelayString = "${rynek.payments.confirm-retry:60s}", initialDelayString = "${rynek.payments.confirm-retry:60s}")
+    public void confirmPending() {
+        payments.findUnconfirmed().forEach(this::confirmOrders);
+    }
+
+    private Payment confirmOrders(UUID paymentId) {
+        Payment payment = payments.findById(paymentId).orElseThrow();
+        boolean done = true;
+        for (UUID orderId : payment.getReferences()) {
+            MarkPaid result = orders.markPaid(orderId, paymentId);
+            if (result == MarkPaid.UNAVAILABLE) {
+                done = false;
+            } else if (result == MarkPaid.REJECTED) {
+                // Zamówienie anulowano między sprawdzeniem a zaksięgowaniem: pieniądze za nie trzeba oddać ręcznie,
+                // dopóki nie ma zwrotów (następny etap payment-service).
+                log.error("Płatność {} zaksięgowana, ale zamówienie {} odrzuciło mark-paid: wymaga zwrotu", paymentId, orderId);
+            }
+        }
+        if (!done) {
+            log.warn("Płatność {}: order-service nie odpowiada, ponowimy oznaczenie zamówień", paymentId);
+            return payment;
+        }
+        return change(paymentId, p -> {
+            p.confirmOrders();
+            return p;
+        });
+    }
+
+    private String notAwaiting(Payment payment) {
+        for (UUID orderId : payment.getReferences()) {
+            Optional<OrderInfo> order = orders.order(orderId);
+            if (order.isEmpty() || !order.get().awaitingPayment()) {
+                return "Zamówienie " + order.map(OrderInfo::number).orElse("") + " zostało anulowane albo wygasło. Nie pobraliśmy pieniędzy.";
+            }
+        }
+        return null;
+    }
+
+    private <T> T change(UUID paymentId, java.util.function.Function<Payment, T> action) {
+        try {
+            return transaction.execute(status -> {
+                Payment payment = payments.findById(paymentId).orElseThrow();
+                T result = action.apply(payment);
+                payments.saveAndFlush(payment);
+                return result;
+            });
+        } catch (ObjectOptimisticLockingFailureException e) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "Płatność właśnie się zmieniła. Odśwież i spróbuj ponownie.");
+        }
+    }
+
+    private static List<UUID> parse(String referenceIds) {
+        if (referenceIds == null || referenceIds.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Podaj zamówienie do opłacenia.");
+        }
+        List<UUID> ids = new ArrayList<>();
+        try {
+            Arrays.stream(referenceIds.split(",")).map(String::trim).filter(s -> !s.isEmpty()).map(UUID::fromString)
+                    .distinct().forEach(ids::add);
+        } catch (IllegalArgumentException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nieprawidłowe id zamówienia.");
+        }
+        if (ids.isEmpty() || ids.size() > MAX_REFERENCES) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Jedna płatność obejmuje od 1 do " + MAX_REFERENCES + " zamówień.");
+        }
+        return ids;
+    }
+
+    private static ResponseStatusException unprocessable(String message) {
+        return new ResponseStatusException(HttpStatus.UNPROCESSABLE_CONTENT, message);
+    }
+}

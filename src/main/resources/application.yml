@@ -4,6 +4,34 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  datasource:
+    # Lokalnie: rynek-infra/local (docker compose). Inne środowiska ustawiają zmienne.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/payments}
+    username: ${DB_USER:payments}
+    password: ${DB_PASSWORD:payments}
+  jpa:
+    open-in-view: false
+    hibernate:
+      # Schemat zakłada Flyway (db/migration); Hibernate tylko sprawdza zgodność encji.
+      ddl-auto: validate
+
+rynek:
+  order:
+    url: ${ORDER_SERVICE_URL:http://localhost:8091}
+  payments:
+    # Dostawca płatności za interfejsem PaymentProvider. Na razie jest tylko „sandbox” (symulator bez prawdziwych
+    # pieniędzy); prawdziwy dostawca (Przelewy24 / PayU / Stripe) to decyzja biznesowa.
+    provider: ${PAYMENT_PROVIDER:sandbox}
+    # Adres, pod którym przeglądarka widzi API (gateway): strona symulatora karty i przelewu.
+    public-api-url: ${PUBLIC_API_URL:http://localhost:8080/api/v1}
+    # Powrót z płatności przekierowaniem (karta, przelew) na ekran potwierdzenia.
+    frontend-url: ${FRONTEND_URL:http://localhost:4200}
+    # Podpis webhooków dostawcy (HMAC-SHA256). Wartość lokalna jest jawna celowo.
+    webhook-secret: ${PAYMENT_WEBHOOK_SECRET:rynek-sandbox-local}
+  jwt:
+    # Klucze publiczne pobierane leniwie przy pierwszym tokenie, więc serwis startuje bez działającego identity.
+    jwk-set-uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}/internal/auth/jwks
+    issuer: ${JWT_ISSUER:rynek-identity}
 
 server:
   port: ${PORT:8092}

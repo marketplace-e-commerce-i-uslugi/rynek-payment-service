@@ -2,7 +2,7 @@
 
 `payment-service` — płatności i wypłaty
 
-> Status: **szkielet**. Wszystkie endpointy z tabeli istnieją w kontrolerach (`src/main/java/.../api/`) i zwracają `501 Not Implemented` (RFC 7807). Ciała żądań to puste rekordy w `api/dto/`.
+> Status: **płatności za zamówienia działają** z dostawcą `sandbox` (symulator bez prawdziwych pieniędzy): metody, rozpoczęcie płatności, BLIK, status, webhook z podpisem i oznaczanie zamówień jako opłaconych w order-service. Zwroty, saldo, wypłaty i rachunek do wypłat oraz zaliczki za rezerwacje zwracają `501 Not Implemented` / 422. Prawdziwy dostawca (Przelewy24 / PayU / Stripe) to decyzja biznesowa.
 
 ## Uruchomienie
 
@@ -31,6 +31,15 @@ Ekrany: 8 Płatność, 9 Panel (przychód). Zalecenie: jeden dostawca płatnośc
 | GET | `/api/v1/seller/payouts` | Historia wypłat | seller |
 | GET | `/api/v1/seller/balance` | Saldo i środki oczekujące | seller |
 | PUT | `/api/v1/seller/payout-account` | Rachunek do wypłat | seller |
+| GET, POST | `/api/v1/payments/sandbox/{paymentId}` | Strona symulatora dostawcy dla karty i przelewu (tylko `provider=sandbox`) | pub |
+
+### Zasady
+
+- `POST /payments {referenceType, referenceId, method}` z `Idempotency-Key`. `referenceId` to id zamówień rozdzielone przecinkami (zakup z koszyka od kilku sprzedawców = jedna płatność). Kwota to suma zamówień; każde musi należeć do płacącego i czekać na płatność. Nowa płatność zastępuje niedokończone płatności za te same zamówienia (status `FAILED`, „Zastąpiona nową płatnością.”).
+- BLIK: `WAITING_FOR_BLIK` → `POST /{id}/blik {code}`. Odrzucony kod daje 422 i płatność czeka na kolejny; po 3 odrzuceniach jest `FAILED`. W symulatorze bank odrzuca tylko kod `000000`.
+- Karta i przelew: `PENDING` z `redirectUrl` do strony dostawcy. Wynik przychodzi webhookiem `POST /payments/webhooks/{provider}` z nagłówkiem `X-Signature` (HMAC-SHA256 treści, sekret `PAYMENT_WEBHOOK_SECRET`) i treścią `{paymentId, result: SUCCEEDED|FAILED}`. Ponowiony webhook dla rozliczonej płatności niczego nie zmienia. Strona symulatora rozlicza płatność tak samo i przekierowuje (303) na `/zamowienie/potwierdzenie` frontendu.
+- Przed zaksięgowaniem płatność sprawdza, czy zamówienia nadal czekają (mogły wygasnąć po 30 min). Jeśli nie, płatność jest `FAILED` i pieniądze nie są pobierane. Po sukcesie zamówienia są oznaczane jako opłacone (`mark-paid` z `paymentId`); gdy order-service nie odpowiada, próba jest ponawiana co minutę (`orders_confirmed`).
+- `Payment` ma więcej pól niż kształt z frontendu: `method`, `orderIds`, `reason` (powód niepowodzenia).
 
 ## Zdarzenia Kafka
 
@@ -42,8 +51,8 @@ Wiersze z §17, w których występuje `payment` (publikuje lub słucha).
 
 ## Dane i zależności
 
-- **Magazyn danych:** PostgreSQL
-- **Zależności:** dostawca płatności za interfejsem PaymentProvider (Przelewy24 / PayU / Stripe — do decyzji)
+- **Magazyn danych:** PostgreSQL (baza `payments`)
+- **Zależności:** dostawca płatności za interfejsem `PaymentProvider` (na razie `SandboxProvider`; Przelewy24 / PayU / Stripe do decyzji), order-service (`GET /internal/orders/{id}`, `POST /internal/orders/{id}/mark-paid`)
 - **Kontrakty:** `rynek-contracts/openapi/` i `rynek-contracts/events/`
 - **Lokalne uruchomienie:** `rynek-infra/local/`
 
