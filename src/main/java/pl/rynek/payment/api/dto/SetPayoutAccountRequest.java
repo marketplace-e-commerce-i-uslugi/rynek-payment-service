@@ -1,7 +1,8 @@
 package pl.rynek.payment.api.dto;
 
-/**
- * Ciało żądania: Rachunek do wypłat. Pola do uzupełnienia razem z kontraktem w rynek-contracts.
- */
-public record SetPayoutAccountRequest() {
+import jakarta.validation.constraints.NotBlank;
+
+/** Kształt {@code PayoutAccount} z rynek-frontend. IBAN może mieć spacje; sam numer polskiego rachunku dostaje prefiks PL. */
+public record SetPayoutAccountRequest(@NotBlank(message = "Podaj właściciela rachunku.") String holder,
+                                      @NotBlank(message = "Podaj numer rachunku.") String iban) {
 }

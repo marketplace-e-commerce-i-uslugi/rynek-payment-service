@@ -24,21 +24,22 @@ import pl.rynek.payment.api.dto.RefundRequest;
 import pl.rynek.payment.api.dto.WebhookEvent;
 import pl.rynek.payment.payments.PaymentMethod;
 import pl.rynek.payment.payments.PaymentService;
+import pl.rynek.payment.payments.RefundService;
 import pl.rynek.payment.provider.WebhookSignature;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
-
-import static pl.rynek.payment.common.NotImplemented.notImplemented;
 
 @RestController
 public class PaymentsController {
 
     private final PaymentService payments;
+    private final RefundService refunds;
     private final WebhookSignature signature;
     private final ObjectMapper json;
 
-    public PaymentsController(PaymentService payments, WebhookSignature signature, ObjectMapper json) {
+    public PaymentsController(PaymentService payments, RefundService refunds, WebhookSignature signature, ObjectMapper json) {
         this.payments = payments;
+        this.refunds = refunds;
         this.signature = signature;
         this.json = json;
     }
@@ -107,11 +108,25 @@ public class PaymentsController {
     }
 
     /**
-     * Zwrot środków. Dostęp: seller / admin. Następny etap payment-service.
+     * Zwrot środków za zamówienie wysłane, zrealizowane albo anulowane, w całości lub w części. Dostęp: seller (sprzedawca
+     * zamówienia) / admin. Za niewysłane zamówienie jest 409: wystarczy je anulować, a pieniądze wrócą automatycznie.
+     * {@code Idempotency-Key} jest opcjonalny: ponowienie z tym samym kluczem nie zwraca pieniędzy drugi raz.
      */
     @PostMapping("/api/v1/payments/{paymentId}/refund")
-    public void refund(@PathVariable String paymentId, @RequestBody RefundRequest request) {
-        throw notImplemented();
+    public PaymentResponse refund(@AuthenticationPrincipal Jwt token, @PathVariable UUID paymentId,
+                                  @RequestHeader(name = "Idempotency-Key", required = false) String idempotencyKey,
+                                  @Valid @RequestBody(required = false) RefundRequest request) {
+        RefundRequest body = request == null ? new RefundRequest(null, null, null) : request;
+        Long amount = null;
+        if (body.amount() != null) {
+            if (body.amount().currency() != null && !"PLN".equals(body.amount().currency())) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Zwrot jest możliwy tylko w złotych (PLN).");
+            }
+            amount = body.amount().amount();
+        }
+        List<String> roles = token.getClaimAsStringList("roles");
+        boolean admin = roles != null && roles.contains("ADMIN");
+        return view(refunds.refund(userId(token), admin, paymentId, idempotencyKey, body.orderId(), amount, body.reason()));
     }
 
     private PaymentResponse view(pl.rynek.payment.payments.Payment payment) {

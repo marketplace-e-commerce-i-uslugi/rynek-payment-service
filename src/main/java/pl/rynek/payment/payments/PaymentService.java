@@ -25,7 +25,8 @@ import pl.rynek.payment.provider.PaymentProvider;
 
 /**
  * Płatności za zamówienia. Po udanej płatności zamówienia są oznaczane jako opłacone w order-service; jeśli order-service
- * nie odpowiada, próba jest ponawiana co minutę ({@link #confirmPending()}). Zaliczki za rezerwacje jeszcze nie działają.
+ * nie odpowiada, próba jest ponawiana co minutę ({@link #confirmPending()}). Zaksięgowanie zapisuje przychód każdego
+ * sprzedawcy ({@link SellerEarning}) do salda. Zaliczki za rezerwacje jeszcze nie działają.
  */
 @Service
 public class PaymentService {
@@ -35,14 +36,18 @@ public class PaymentService {
     static final int MAX_REFERENCES = 20;
 
     private final PaymentRepository payments;
+    private final SellerEarningRepository earnings;
+    private final RefundService refunds;
     private final OrderClient orders;
     private final PaymentProvider provider;
     private final TransactionTemplate transaction;
     private final Clock clock;
 
-    public PaymentService(PaymentRepository payments, OrderClient orders, PaymentProvider provider,
-                          PlatformTransactionManager transactions, Clock clock) {
+    public PaymentService(PaymentRepository payments, SellerEarningRepository earnings, RefundService refunds, OrderClient orders,
+                          PaymentProvider provider, PlatformTransactionManager transactions, Clock clock) {
         this.payments = payments;
+        this.earnings = earnings;
+        this.refunds = refunds;
         this.orders = orders;
         this.provider = provider;
         this.transaction = new TransactionTemplate(transactions);
@@ -136,7 +141,8 @@ public class PaymentService {
      */
     private Payment settle(UUID paymentId, boolean succeeded, String reason) {
         Payment payment = payments.findById(paymentId).orElseThrow();
-        String rejected = succeeded ? notAwaiting(payment) : null;
+        List<OrderInfo> paid = new ArrayList<>();
+        String rejected = succeeded ? notAwaiting(payment, paid) : null;
         Payment settled = change(paymentId, p -> {
             if (!p.getStatus().open()) {
                 return p;
@@ -147,6 +153,7 @@ public class PaymentService {
                 p.fail(rejected, clock.instant());
             } else {
                 p.succeed(clock.instant());
+                paid.forEach(o -> earnings.save(new SellerEarning(o.id(), p.getId(), o.sellerId(), o.total(), clock.instant())));
             }
             return p;
         });
@@ -170,9 +177,14 @@ public class PaymentService {
             if (result == MarkPaid.UNAVAILABLE) {
                 done = false;
             } else if (result == MarkPaid.REJECTED) {
-                // Zamówienie anulowano między sprawdzeniem a zaksięgowaniem: pieniądze za nie trzeba oddać ręcznie,
-                // dopóki nie ma zwrotów (następny etap payment-service).
-                log.error("Płatność {} zaksięgowana, ale zamówienie {} odrzuciło mark-paid: wymaga zwrotu", paymentId, orderId);
+                // Zamówienie anulowano między sprawdzeniem a zaksięgowaniem: pieniądze za nie wracają do kupującego.
+                log.warn("Płatność {} zaksięgowana, ale zamówienie {} odrzuciło mark-paid: zwracamy pieniądze", paymentId, orderId);
+                try {
+                    refunds.orderCancelled(orderId);
+                } catch (RuntimeException e) {
+                    // order-service i tak zgłosi anulowanie, a zwrot ma klucz cancel:<orderId>, więc nie pójdzie dwa razy.
+                    log.error("Płatność {}: zwrot za zamówienie {} się nie udał, ponowi go zgłoszenie z order-service", paymentId, orderId, e);
+                }
             }
         }
         if (!done) {
@@ -185,12 +197,14 @@ public class PaymentService {
         });
     }
 
-    private String notAwaiting(Payment payment) {
+    /** Powód odrzucenia albo {@code null}, gdy wszystkie zamówienia czekają; te trafiają do {@code awaiting}. */
+    private String notAwaiting(Payment payment, List<OrderInfo> awaiting) {
         for (UUID orderId : payment.getReferences()) {
             Optional<OrderInfo> order = orders.order(orderId);
             if (order.isEmpty() || !order.get().awaitingPayment()) {
                 return "Zamówienie " + order.map(OrderInfo::number).orElse("") + " zostało anulowane albo wygasło. Nie pobraliśmy pieniędzy.";
             }
+            awaiting.add(order.get());
         }
         return null;
     }

@@ -42,6 +42,9 @@ public class Payment {
 
     private long amount;
 
+    @Column(name = "refunded_amount")
+    private long refundedAmount;
+
     private String currency;
 
     @Enumerated(EnumType.STRING)
@@ -118,6 +121,15 @@ public class Payment {
         return true;
     }
 
+    /** Zwrot części albo całości; po zwróceniu całej kwoty płatność ma status {@code REFUNDED}. */
+    void refund(long value, Instant now) {
+        refundedAmount += value;
+        updatedAt = now;
+        if (refundedAmount >= amount) {
+            move(PaymentStatus.REFUNDED, null, now);
+        }
+    }
+
     void confirmOrders() {
         this.ordersConfirmed = true;
     }
@@ -142,6 +154,10 @@ public class Payment {
 
     public long getAmount() {
         return amount;
+    }
+
+    public long getRefundedAmount() {
+        return refundedAmount;
     }
 
     public PaymentMethod getMethod() {

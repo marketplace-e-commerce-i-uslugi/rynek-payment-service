@@ -28,6 +28,15 @@ rynek:
     frontend-url: ${FRONTEND_URL:http://localhost:4200}
     # Podpis webhooków dostawcy (HMAC-SHA256). Wartość lokalna jest jawna celowo.
     webhook-secret: ${PAYMENT_WEBHOOK_SECRET:rynek-sandbox-local}
+  payouts:
+    # Automatyczne wypłaty dostępnych środków na rachunek sprzedawcy (cron Springa, strefa Europe/Warsaw).
+    # Lokalnie do testów np. PAYOUTS_CRON="0 * * * * *" (co minutę); "-" wyłącza.
+    cron: ${PAYOUTS_CRON:0 0 6 * * *}
+    zone: Europe/Warsaw
+    # Najmniejsza wypłata w groszach.
+    minimum: ${PAYOUTS_MINIMUM:100}
+    # Symulator: po takim czasie przelew wypłaty ma status „Wypłacono”.
+    sandbox-transfer-time: ${PAYOUTS_SANDBOX_TRANSFER_TIME:1d}
   jwt:
     # Klucze publiczne pobierane leniwie przy pierwszym tokenie, więc serwis startuje bez działającego identity.
     jwk-set-uri: ${IDENTITY_SERVICE_URL:http://localhost:8081}/internal/auth/jwks

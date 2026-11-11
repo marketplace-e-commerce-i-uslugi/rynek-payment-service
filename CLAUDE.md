@@ -2,7 +2,7 @@
 
 Mikroserwis platformy **Rynek**: `payment-service` — płatności i wypłaty
 
-Zakres, endpointy i zdarzenia są opisane w `README.md`. Płatności za zamówienia działają z dostawcą `sandbox` (PostgreSQL + Flyway, JWT z JWKS identity); zwroty, saldo i wypłaty zwracają 501. Nie dodawaj logiki bez wyraźnej prośby.
+Zakres, endpointy i zdarzenia są opisane w `README.md`. Płatności za zamówienia, zwroty, saldo sprzedawcy i automatyczne wypłaty działają z dostawcą `sandbox` (PostgreSQL + Flyway, JWT z JWKS identity); zaliczki za rezerwacje jeszcze nie. Nie dodawaj logiki bez wyraźnej prośby.
 
 ## Wspólne konwencje API (§1 dokumentu architektury)
 
@@ -35,6 +35,6 @@ Legenda kolumny **Dostęp**: `pub` = bez logowania, `user` = zalogowany, `seller
 
 ## Struktura kodu
 
-- `pl.rynek.payment.api`: kontrolery REST (pełne ścieżki w adnotacjach), `api.dto`: rekordy żądań i odpowiedzi, `common.NotImplemented`: odpowiedź 501; `payments`: płatność, statusy, rozliczenie i potwierdzanie zamówień; `provider`: `PaymentProvider`, symulator `SandboxProvider`, podpis webhooków; `clients`: klient order-service; `config`: security, błędy RFC 7807 po polsku
+- `pl.rynek.payment.api`: kontrolery REST (pełne ścieżki w adnotacjach), `api.dto`: rekordy żądań i odpowiedzi, `common.NotImplemented`: odpowiedź 501; `payments`: płatność, statusy, rozliczenie i potwierdzanie zamówień, przychód sprzedawcy (`SellerEarning`) i zwroty (`RefundService`); `payouts`: saldo, rachunek (IBAN) i wypłaty; `provider`: `PaymentProvider`, symulator `SandboxProvider`, podpis webhooków; `clients`: klient order-service; `config`: security, błędy RFC 7807 po polsku
 - Konfiguracja: `src/main/resources/application.yml`
 - Port lokalny: 8092

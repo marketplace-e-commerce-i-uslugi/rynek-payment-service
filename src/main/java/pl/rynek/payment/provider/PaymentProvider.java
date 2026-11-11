@@ -1,5 +1,6 @@
 package pl.rynek.payment.provider;
 
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -16,4 +17,13 @@ public interface PaymentProvider {
 
     /** Autoryzacja kodu BLIK u dostawcy: {@code true} = bank zaakceptował. */
     boolean authorizeBlik(UUID paymentId, long amount, String code);
+
+    /** Zwrot części albo całości zaksięgowanej płatności na rachunek kupującego. Błąd dostawcy: wyjątek. */
+    void refund(UUID paymentId, long amount);
+
+    /** Zlecenie przelewu wypłaty na rachunek sprzedawcy. Błąd dostawcy: wyjątek. */
+    void transfer(UUID payoutId, String iban, long amount);
+
+    /** Czy zlecony przelew wypłaty dotarł na rachunek (status „Wypłacono”). */
+    boolean transferArrived(UUID payoutId, Instant orderedAt, Instant now);
 }

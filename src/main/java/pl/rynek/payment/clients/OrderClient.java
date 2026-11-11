@@ -1,6 +1,8 @@
 package pl.rynek.payment.clients;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -15,7 +17,10 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.server.ResponseStatusException;
 
-/** Zamówienia z order-service: kwota i status przed płatnością, oznaczenie jako opłacone po niej. */
+/**
+ * Zamówienia z order-service: kwota i status przed płatnością, oznaczenie jako opłacone po niej, statusy do salda
+ * sprzedawcy (środki z zamówienia zrealizowanego są dostępne do wypłaty).
+ */
 @Component
 public class OrderClient {
 
@@ -36,6 +41,26 @@ public class OrderClient {
             throw unavailable();
         }
     }
+
+    /** Wiele zamówień naraz (po {@value #BATCH}); nieistniejące są pomijane. */
+    public List<OrderInfo> orders(List<UUID> orderIds) {
+        List<OrderInfo> found = new ArrayList<>();
+        for (int i = 0; i < orderIds.size(); i += BATCH) {
+            List<UUID> chunk = orderIds.subList(i, Math.min(i + BATCH, orderIds.size()));
+            try {
+                OrderInfo[] page = http.get().uri(u -> u.path("/internal/orders").queryParam("ids", chunk.toArray()).build())
+                        .retrieve().body(OrderInfo[].class);
+                if (page != null) {
+                    found.addAll(List.of(page));
+                }
+            } catch (RestClientResponseException | ResourceAccessException e) {
+                throw unavailable();
+            }
+        }
+        return found;
+    }
+
+    static final int BATCH = 100;
 
     /** Wynik oznaczenia zamówienia jako opłaconego. */
     public enum MarkPaid { OK, REJECTED, UNAVAILABLE }
@@ -61,6 +86,10 @@ public class OrderClient {
 
         public boolean awaitingPayment() {
             return "AWAITING_PAYMENT".equals(status);
+        }
+
+        public boolean completed() {
+            return "COMPLETED".equals(status);
         }
     }
 }

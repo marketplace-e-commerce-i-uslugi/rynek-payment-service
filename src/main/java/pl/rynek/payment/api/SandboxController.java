@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+import pl.rynek.payment.common.Zloty;
 import pl.rynek.payment.payments.Payment;
 import pl.rynek.payment.payments.PaymentRepository;
 import pl.rynek.payment.payments.PaymentService;
@@ -47,7 +48,7 @@ public class SandboxController {
     @GetMapping(value = "/api/v1/payments/sandbox/{paymentId}", produces = MediaType.TEXT_HTML_VALUE)
     public String page(@PathVariable UUID paymentId) {
         Payment payment = find(paymentId);
-        String amount = String.format("%d,%02d zł", payment.getAmount() / 100, payment.getAmount() % 100);
+        String amount = Zloty.format(payment.getAmount());
         String body = payment.getStatus() == PaymentStatus.PENDING
                 ? """
                   <form method="post"><button name="result" value="success" class="pay">Zapłać %s</button>

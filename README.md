@@ -2,7 +2,7 @@
 
 `payment-service` — płatności i wypłaty
 
-> Status: **płatności za zamówienia działają** z dostawcą `sandbox` (symulator bez prawdziwych pieniędzy): metody, rozpoczęcie płatności, BLIK, status, webhook z podpisem i oznaczanie zamówień jako opłaconych w order-service. Zwroty, saldo, wypłaty i rachunek do wypłat oraz zaliczki za rezerwacje zwracają `501 Not Implemented` / 422. Prawdziwy dostawca (Przelewy24 / PayU / Stripe) to decyzja biznesowa.
+> Status: **płatności, zwroty, saldo i wypłaty działają** z dostawcą `sandbox` (symulator bez prawdziwych pieniędzy): metody, rozpoczęcie płatności, BLIK, status, webhook z podpisem, oznaczanie zamówień jako opłaconych, zwroty (ręczne i po anulowaniu zamówienia), saldo sprzedawcy, rachunek do wypłat i automatyczne wypłaty. Zaliczki za rezerwacje zwracają 422. Prawdziwy dostawca (Przelewy24 / PayU / Stripe) to decyzja biznesowa.
 
 ## Uruchomienie
 
@@ -32,6 +32,7 @@ Ekrany: 8 Płatność, 9 Panel (przychód). Zalecenie: jeden dostawca płatnośc
 | GET | `/api/v1/seller/balance` | Saldo i środki oczekujące | seller |
 | PUT | `/api/v1/seller/payout-account` | Rachunek do wypłat | seller |
 | GET, POST | `/api/v1/payments/sandbox/{paymentId}` | Strona symulatora dostawcy dla karty i przelewu (tylko `provider=sandbox`) | pub |
+| POST | `/internal/orders/{orderId}/cancelled` | Zamówienie anulowane albo wygasłe: zwrot za opłacone, płatności w toku `FAILED` (zamiast zdarzenia `order.cancelled`) | int |
 
 ### Zasady
 
@@ -39,7 +40,24 @@ Ekrany: 8 Płatność, 9 Panel (przychód). Zalecenie: jeden dostawca płatnośc
 - BLIK: `WAITING_FOR_BLIK` → `POST /{id}/blik {code}`. Odrzucony kod daje 422 i płatność czeka na kolejny; po 3 odrzuceniach jest `FAILED`. W symulatorze bank odrzuca tylko kod `000000`.
 - Karta i przelew: `PENDING` z `redirectUrl` do strony dostawcy. Wynik przychodzi webhookiem `POST /payments/webhooks/{provider}` z nagłówkiem `X-Signature` (HMAC-SHA256 treści, sekret `PAYMENT_WEBHOOK_SECRET`) i treścią `{paymentId, result: SUCCEEDED|FAILED}`. Ponowiony webhook dla rozliczonej płatności niczego nie zmienia. Strona symulatora rozlicza płatność tak samo i przekierowuje (303) na `/zamowienie/potwierdzenie` frontendu.
 - Przed zaksięgowaniem płatność sprawdza, czy zamówienia nadal czekają (mogły wygasnąć po 30 min). Jeśli nie, płatność jest `FAILED` i pieniądze nie są pobierane. Po sukcesie zamówienia są oznaczane jako opłacone (`mark-paid` z `paymentId`); gdy order-service nie odpowiada, próba jest ponawiana co minutę (`orders_confirmed`).
-- `Payment` ma więcej pól niż kształt z frontendu: `method`, `orderIds`, `reason` (powód niepowodzenia).
+- `Payment` ma więcej pól niż kształt z frontendu: `method`, `orderIds`, `reason` (powód niepowodzenia), `refunded` (zwrócona część).
+
+### Zwroty
+
+- Zwrot dotyczy zawsze jednego zamówienia (płatność z koszyka obejmuje zamówienia kilku sprzedawców). Płatność ma `refunded`; po zwróceniu całej kwoty ma status `REFUNDED`.
+- `POST /payments/{id}/refund {orderId?, amount?: {amount, currency}, reason?}`, opcjonalnie z `Idempotency-Key`. Może go wysłać sprzedawca zamówienia albo `ADMIN` (rola z JWT). `orderId` można pominąć, gdy płatność obejmuje jedno zamówienie wołającego. Bez `amount` wraca cała pozostała kwota. Za dużo: 422 „Możesz zwrócić najwyżej …”, całość już wróciła: 409.
+- Zwrot ręczny jest dla zamówień wysłanych, zrealizowanych albo anulowanych. Dla niewysłanego („Do wysłania”) jest 409: takie zamówienie się anuluje, a pieniądze wracają automatycznie.
+- Anulowanie i wygaśnięcie: order-service woła `POST /internal/orders/{id}/cancelled` (ponawia co minutę, gdy payment nie odpowiada). Płatności w toku dostają `FAILED` („Zamówienie zostało anulowane albo wygasło…”), a za opłacone zamówienie wraca cała pozostała kwota. Klucz `cancel:<orderId>` sprawia, że ponowienie nie zwraca pieniędzy drugi raz. Kolizja z rozliczaną właśnie płatnością daje 503 (ponów).
+- Gdy zamówienie anulowano w chwili księgowania płatności (`mark-paid` → 409), pieniądze za nie wracają automatycznie.
+- Zwroty jednej płatności blokują jej wiersz (`SELECT … FOR UPDATE`), więc równoległe zwroty nie przekroczą zapłaconej kwoty. W `sandbox` zwrot przechodzi od razu. Prawdziwy dostawca rozlicza zwroty asynchronicznie, więc zwrot dostanie wtedy własny status i webhook.
+
+### Saldo i wypłaty
+
+- Zaksięgowanie płatności zapisuje przychód każdego sprzedawcy z zamówienia (`seller_earnings`). Płatności zaksięgowane przed wprowadzeniem salda dostają przychód automatycznie: co `rynek.payments.earnings-backfill` (60 s) kwotę i sprzedawcę podaje order-service. Przy zwrocie przychód jest uzupełniany od razu.
+- `GET /seller/balance {available, pending}`. `pending`: opłacone zamówienia jeszcze niezrealizowane, minus zwroty. `available`: zamówienia „Zrealizowane” minus zwroty i wszystkie wypłaty. Zwrot po wypłacie może dać ujemne `available`, a wtedy kolejna wypłata czeka. Statusy zamówień payment-service czyta z order-service (`GET /internal/orders?ids=`) przy odczycie salda i przed wypłatą, zamiast słuchać `order.completed`. Gdy order-service nie odpowiada, saldo liczy się z ostatnio znanych statusów.
+- `PUT /seller/payout-account {holder, iban}`: IBAN z sumą kontrolną mod 97 (sam 26-cyfrowy numer dostaje `PL`), odpowiedź zwraca IBAN w grupach po 4 znaki. Endpointu do odczytu rachunku nie ma w specyfikacji, więc formularz we frontendzie startuje pusty.
+- Wypłaty są automatyczne, a w specyfikacji nie ma endpointu do ich zlecania. `rynek.payouts.cron` (domyślnie codziennie o 6:00, `PAYOUTS_CRON`) wypłaca całe `available` (co najmniej `rynek.payouts.minimum`, domyślnie 1 zł) na zapisany rachunek. Bez rachunku wypłaty nie ma. Status „W realizacji” zmienia się na „Wypłacono”, gdy przelew dotrze (w `sandbox` po `rynek.payouts.sandbox-transfer-time`, domyślnie 1 dzień). `GET /seller/payouts`: kursor `{items, nextCursor}`, od najnowszej.
+- Prowizji Rynku i okresu karencji po realizacji (np. 14 dni na odstąpienie od umowy) jeszcze nie ma, bo to decyzje biznesowe. Przebieg wypłat zakłada jedną instancję serwisu, choć blokada rachunku chroni przed podwójną wypłatą. Przy wielu instancjach trzeba dodać blokadę harmonogramu (np. ShedLock).
 
 ## Zdarzenia Kafka
 
@@ -52,7 +70,7 @@ Wiersze z §17, w których występuje `payment` (publikuje lub słucha).
 ## Dane i zależności
 
 - **Magazyn danych:** PostgreSQL (baza `payments`)
-- **Zależności:** dostawca płatności za interfejsem `PaymentProvider` (na razie `SandboxProvider`; Przelewy24 / PayU / Stripe do decyzji), order-service (`GET /internal/orders/{id}`, `POST /internal/orders/{id}/mark-paid`)
+- **Zależności:** dostawca płatności za interfejsem `PaymentProvider` (na razie `SandboxProvider`; Przelewy24 / PayU / Stripe do decyzji), order-service (`GET /internal/orders/{id}`, `GET /internal/orders?ids=`, `POST /internal/orders/{id}/mark-paid`); order-service woła `POST /internal/orders/{id}/cancelled`
 - **Kontrakty:** `rynek-contracts/openapi/` i `rynek-contracts/events/`
 - **Lokalne uruchomienie:** `rynek-infra/local/`
 
