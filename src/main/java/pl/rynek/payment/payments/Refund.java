@@ -39,6 +39,10 @@ public class Refund {
     @Column(name = "created_at")
     private Instant createdAt;
 
+    /** {@code false}: order-service jeszcze nie wie o zwrocie (dotyczy zwrotów od sprzedawcy i admina). */
+    @Column(name = "order_notified")
+    private boolean orderNotified;
+
     protected Refund() {
     }
 
@@ -52,6 +56,15 @@ public class Refund {
         this.requestedBy = requestedBy;
         this.idempotencyKey = idempotencyKey;
         this.createdAt = now;
+        this.orderNotified = requestedBy == null;
+    }
+
+    void orderNotified() {
+        this.orderNotified = true;
+    }
+
+    public UUID getOrderId() {
+        return orderId;
     }
 
     public UUID getId() {

@@ -91,7 +91,28 @@ public class RefundService {
         }
         String why = reason != null && !reason.isBlank() ? reason.trim()
                 : admin && !earning.getSellerId().equals(callerId) ? "Zwrot przez obsługę Rynku." : "Zwrot od sprzedawcy.";
-        return apply(paymentId, target, amount, why, callerId, key);
+        Payment refunded = apply(paymentId, target, amount, why, callerId, key);
+        notifyOrders();
+        return refunded;
+    }
+
+    /**
+     * Zgłasza order-service zwroty od sprzedawcy i admina (zgłoszony przez kupującego zwrot staje się przyjęty). Gdy
+     * order-service nie odpowiada, zgłoszenie czeka na następny przebieg.
+     */
+    @Scheduled(fixedDelayString = "${rynek.payments.refund-notify-retry:60s}", initialDelayString = "${rynek.payments.refund-notify-retry:60s}")
+    public void notifyOrders() {
+        for (UUID refundId : refunds.findOrderUnnotified()) {
+            Refund refund = refunds.findById(refundId).orElseThrow();
+            if (!orders.refunded(refund.getOrderId())) {
+                log.warn("Zwrot {}: order-service nie odpowiada, ponowimy zgłoszenie", refundId);
+                return;
+            }
+            transaction.executeWithoutResult(status -> refunds.findById(refundId).ifPresent(r -> {
+                r.orderNotified();
+                refunds.save(r);
+            }));
+        }
     }
 
     /**

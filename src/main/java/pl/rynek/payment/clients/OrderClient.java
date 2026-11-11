@@ -77,6 +77,21 @@ public class OrderClient {
         }
     }
 
+    /**
+     * Zwrot pieniędzy za zamówienie: zgłoszony zwrot staje się przyjęty. {@code false}: order-service nie odpowiada,
+     * trzeba ponowić; odrzucenie 4xx nie ma sensu ponawiać, więc też jest {@code true}.
+     */
+    public boolean refunded(UUID orderId) {
+        try {
+            http.post().uri("/internal/orders/{id}/refunded", orderId).retrieve().toBodilessEntity();
+            return true;
+        } catch (HttpClientErrorException e) {
+            return true;
+        } catch (RestClientResponseException | ResourceAccessException e) {
+            return false;
+        }
+    }
+
     private static ResponseStatusException unavailable() {
         return new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Serwis zamówień jest niedostępny. Spróbuj ponownie za chwilę.");
     }
