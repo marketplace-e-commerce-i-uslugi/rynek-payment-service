@@ -2,7 +2,7 @@
 
 `payment-service` — płatności i wypłaty
 
-> Status: **płatności, zwroty, saldo i wypłaty działają** z dostawcą `sandbox` (symulator bez prawdziwych pieniędzy): metody, rozpoczęcie płatności, BLIK, status, webhook z podpisem, oznaczanie zamówień jako opłaconych, zwroty (ręczne i po anulowaniu zamówienia), saldo sprzedawcy, rachunek do wypłat i automatyczne wypłaty. Zaliczki za rezerwacje zwracają 422. Prawdziwy dostawca (Przelewy24 / PayU / Stripe) to decyzja biznesowa.
+> Status: **płatności, zaliczki, zwroty, saldo i wypłaty działają** z dostawcą `sandbox` (symulator bez prawdziwych pieniędzy): metody, rozpoczęcie płatności za zamówienia i zaliczki za rezerwacje, BLIK, status, webhook z podpisem, oznaczanie zamówień i rezerwacji jako opłaconych, zwroty (ręczne i po anulowaniu), saldo sprzedawcy, rachunek do wypłat i automatyczne wypłaty. Prawdziwy dostawca (Przelewy24 / PayU / Stripe) to decyzja biznesowa.
 
 ## Uruchomienie
 
@@ -32,6 +32,7 @@ Ekrany: 8 Płatność, 9 Panel (przychód). Zalecenie: jeden dostawca płatnośc
 | GET | `/api/v1/seller/balance` | Saldo i środki oczekujące | seller |
 | PUT | `/api/v1/seller/payout-account` | Rachunek do wypłat | seller |
 | GET, POST | `/api/v1/payments/sandbox/{paymentId}` | Strona symulatora dostawcy dla karty i przelewu (tylko `provider=sandbox`) | pub |
+| POST | `/internal/bookings/{bookingId}/cancelled` | Rezerwacja anulowana albo wygasła: zwrot zaliczki, płatności w toku `FAILED` | int |
 | POST | `/internal/orders/{orderId}/cancelled` | Zamówienie anulowane albo wygasłe: zwrot za opłacone, płatności w toku `FAILED` (zamiast zdarzenia `order.cancelled`) | int |
 
 ### Zasady
@@ -41,6 +42,11 @@ Ekrany: 8 Płatność, 9 Panel (przychód). Zalecenie: jeden dostawca płatnośc
 - Karta i przelew: `PENDING` z `redirectUrl` do strony dostawcy. Wynik przychodzi webhookiem `POST /payments/webhooks/{provider}` z nagłówkiem `X-Signature` (HMAC-SHA256 treści, sekret `PAYMENT_WEBHOOK_SECRET`) i treścią `{paymentId, result: SUCCEEDED|FAILED}`. Ponowiony webhook dla rozliczonej płatności niczego nie zmienia. Strona symulatora rozlicza płatność tak samo i przekierowuje (303) na `/zamowienie/potwierdzenie` frontendu.
 - Przed zaksięgowaniem płatność sprawdza, czy zamówienia nadal czekają (mogły wygasnąć po 30 min). Jeśli nie, płatność jest `FAILED` i pieniądze nie są pobierane. Po sukcesie zamówienia są oznaczane jako opłacone (`mark-paid` z `paymentId`); gdy order-service nie odpowiada, próba jest ponawiana co minutę (`orders_confirmed`).
 - `Payment` ma więcej pól niż kształt z frontendu: `method`, `orderIds`, `reason` (powód niepowodzenia), `refunded` (zwrócona część).
+
+### Zaliczki za rezerwacje
+
+- `POST /payments {referenceType: BOOKING, referenceId: <id rezerwacji>, method}`: jedna rezerwacja klienta w statusie „Czeka na zaliczkę” (`AWAITING_DEPOSIT` z booking-service), kwota to zaliczka (0 daje 422). Po zaksięgowaniu booking-service dostaje `mark-paid` (z ponawianiem), a usługodawca przychód (`seller_earnings.reference_type = BOOKING`), dostępny do wypłaty po „Wykonana”. Strona symulatora wraca na `/zamowienie/potwierdzenie?payment=…&booking=…`.
+- Anulowanie albo wygaśnięcie rezerwacji (`POST /internal/bookings/{id}/cancelled`) zwraca całą zaliczkę i oznacza płatność w toku jako nieudaną, tak jak przy zamówieniach.
 
 ### Zwroty
 
@@ -71,7 +77,7 @@ Wiersze z §17, w których występuje `payment` (publikuje lub słucha).
 ## Dane i zależności
 
 - **Magazyn danych:** PostgreSQL (baza `payments`)
-- **Zależności:** dostawca płatności za interfejsem `PaymentProvider` (na razie `SandboxProvider`; Przelewy24 / PayU / Stripe do decyzji), order-service (`GET /internal/orders/{id}`, `GET /internal/orders?ids=`, `POST /internal/orders/{id}/mark-paid`); order-service woła `POST /internal/orders/{id}/cancelled`
+- **Zależności:** dostawca płatności za interfejsem `PaymentProvider` (na razie `SandboxProvider`; Przelewy24 / PayU / Stripe do decyzji), booking-service (`GET /internal/bookings/{id}`, `?ids=`, `mark-paid`; woła `/internal/bookings/{id}/cancelled`), order-service (`GET /internal/orders/{id}`, `GET /internal/orders?ids=`, `POST /internal/orders/{id}/mark-paid`); order-service woła `POST /internal/orders/{id}/cancelled`
 - **Kontrakty:** `rynek-contracts/openapi/` i `rynek-contracts/events/`
 - **Lokalne uruchomienie:** `rynek-infra/local/`
 

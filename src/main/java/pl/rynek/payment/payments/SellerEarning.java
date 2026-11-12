@@ -39,10 +39,21 @@ public class SellerEarning {
     @Column(name = "created_at")
     private Instant createdAt;
 
+    /** Zamówienie (środki dostępne po realizacji) albo rezerwacja (zaliczka dostępna po wykonaniu usługi). */
+    @jakarta.persistence.Enumerated(jakarta.persistence.EnumType.STRING)
+    @Column(name = "reference_type")
+    private ReferenceType referenceType = ReferenceType.ORDER;
+
     protected SellerEarning() {
     }
 
     SellerEarning(UUID orderId, UUID paymentId, UUID sellerId, long amount, Instant now) {
+        this(orderId, paymentId, sellerId, amount, ReferenceType.ORDER, now);
+    }
+
+    /** {@code orderId} to id zamówienia albo rezerwacji (kolumna z czasów, gdy płaciło się tylko za zamówienia). */
+    SellerEarning(UUID orderId, UUID paymentId, UUID sellerId, long amount, ReferenceType referenceType, Instant now) {
+        this.referenceType = referenceType;
         this.orderId = orderId;
         this.paymentId = paymentId;
         this.sellerId = sellerId;

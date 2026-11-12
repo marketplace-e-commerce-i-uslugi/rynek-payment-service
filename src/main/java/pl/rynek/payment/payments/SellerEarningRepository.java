@@ -13,9 +13,13 @@ public interface SellerEarningRepository extends JpaRepository<SellerEarning, UU
 
     List<SellerEarning> findByPaymentId(UUID paymentId);
 
-    /** Zamówienia, których środki czekają na realizację (bez w pełni zwróconych: tam nie ma już czego zwalniać). */
-    @Query("select e.orderId from SellerEarning e where e.sellerId = :sellerId and e.releasedAt is null and e.refunded < e.amount")
-    List<UUID> findUnreleasedOrderIds(UUID sellerId);
+    /**
+     * Zamówienia (rezerwacje), których środki czekają na realizację (wykonanie), bez w pełni zwróconych: tam nie ma już
+     * czego zwalniać.
+     */
+    @Query("select e.orderId from SellerEarning e where e.sellerId = :sellerId and e.referenceType = :type and e.releasedAt is null"
+            + " and e.refunded < e.amount")
+    List<UUID> findUnreleasedIds(UUID sellerId, ReferenceType type);
 
     @Modifying
     @Query("update SellerEarning e set e.releasedAt = :now where e.orderId in :orderIds and e.releasedAt is null")

@@ -18,15 +18,15 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
+import pl.rynek.payment.clients.BookingClient;
 import pl.rynek.payment.clients.OrderClient;
 import pl.rynek.payment.clients.OrderClient.MarkPaid;
-import pl.rynek.payment.clients.OrderClient.OrderInfo;
 import pl.rynek.payment.provider.PaymentProvider;
 
 /**
- * Płatności za zamówienia. Po udanej płatności zamówienia są oznaczane jako opłacone w order-service; jeśli order-service
- * nie odpowiada, próba jest ponawiana co minutę ({@link #confirmPending()}). Zaksięgowanie zapisuje przychód każdego
- * sprzedawcy ({@link SellerEarning}) do salda. Zaliczki za rezerwacje jeszcze nie działają.
+ * Płatności za zamówienia i zaliczki za rezerwacje. Po udanej płatności zamówienia (rezerwacja) są oznaczane jako opłacone
+ * w order-service (booking-service); jeśli serwis nie odpowiada, próba jest ponawiana co minutę ({@link #confirmPending()}).
+ * Zaksięgowanie zapisuje przychód każdego sprzedawcy albo usługodawcy ({@link SellerEarning}) do salda.
  */
 @Service
 public class PaymentService {
@@ -39,16 +39,18 @@ public class PaymentService {
     private final SellerEarningRepository earnings;
     private final RefundService refunds;
     private final OrderClient orders;
+    private final BookingClient bookings;
     private final PaymentProvider provider;
     private final TransactionTemplate transaction;
     private final Clock clock;
 
     public PaymentService(PaymentRepository payments, SellerEarningRepository earnings, RefundService refunds, OrderClient orders,
-                          PaymentProvider provider, PlatformTransactionManager transactions, Clock clock) {
+                          BookingClient bookings, PaymentProvider provider, PlatformTransactionManager transactions, Clock clock) {
         this.payments = payments;
         this.earnings = earnings;
         this.refunds = refunds;
         this.orders = orders;
+        this.bookings = bookings;
         this.provider = provider;
         this.transaction = new TransactionTemplate(transactions);
         this.clock = clock;
@@ -59,9 +61,9 @@ public class PaymentService {
     }
 
     /**
-     * {@code referenceId}: id zamówień rozdzielone przecinkami (zakup z koszyka od kilku sprzedawców). Ponowienie z tym
-     * samym Idempotency-Key zwraca tę samą płatność. Nowa płatność zastępuje rozpoczęte i niedokończone płatności za
-     * te same zamówienia, więc zamówienia nie da się opłacić dwa razy.
+     * {@code referenceId}: id zamówień rozdzielone przecinkami (zakup z koszyka od kilku sprzedawców) albo id jednej
+     * rezerwacji (zaliczka). Ponowienie z tym samym Idempotency-Key zwraca tę samą płatność. Nowa płatność zastępuje
+     * rozpoczęte i niedokończone płatności za te same zamówienia (rezerwację), więc nie da się zapłacić dwa razy.
      */
     public Payment create(UUID buyerId, String idempotencyKey, ReferenceType type, String referenceIds, PaymentMethod method) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 100) {
@@ -71,18 +73,23 @@ public class PaymentService {
         if (earlier.isPresent()) {
             return earlier.get();
         }
-        if (type == ReferenceType.BOOKING) {
-            throw unprocessable("Płatności za rezerwacje jeszcze nie obsługujemy.");
-        }
         List<UUID> ids = parse(referenceIds);
+        if (type == ReferenceType.BOOKING && ids.size() > 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Zaliczkę płacisz za jedną rezerwację naraz.");
+        }
         long amount = 0;
         for (UUID id : ids) {
-            OrderInfo order = orders.order(id).filter(o -> o.buyerId().equals(buyerId))
-                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy tego zamówienia."));
-            if (!order.awaitingPayment()) {
-                throw new ResponseStatusException(HttpStatus.CONFLICT, "Zamówienie " + order.number() + " nie czeka już na płatność.");
+            Payee payee = payee(type, id).filter(p -> p.buyerId().equals(buyerId))
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                            type == ReferenceType.BOOKING ? "Nie znaleźliśmy tej rezerwacji." : "Nie znaleźliśmy tego zamówienia."));
+            if (!payee.awaiting()) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT, type == ReferenceType.BOOKING
+                        ? "Rezerwacja nie czeka już na zaliczkę." : payee.label() + " nie czeka już na płatność.");
             }
-            amount += order.total();
+            if (payee.amount() <= 0) {
+                throw unprocessable("Ta rezerwacja nie wymaga zaliczki.");
+            }
+            amount += payee.amount();
         }
         Payment payment = new Payment(buyerId, type, ids, amount, method, provider.name(), idempotencyKey, clock.instant());
         try {
@@ -136,12 +143,12 @@ public class PaymentService {
     }
 
     /**
-     * Rozliczenie płatności w toku. Przed zaksięgowaniem sprawdza, czy zamówienia nadal czekają na płatność (mogły wygasnąć
-     * albo zostać anulowane); jeśli nie, płatność jest nieudana i pieniądze nie są pobierane.
+     * Rozliczenie płatności w toku. Przed zaksięgowaniem sprawdza, czy zamówienia (rezerwacja) nadal czekają na płatność
+     * (mogły wygasnąć albo zostać anulowane); jeśli nie, płatność jest nieudana i pieniądze nie są pobierane.
      */
     private Payment settle(UUID paymentId, boolean succeeded, String reason) {
         Payment payment = payments.findById(paymentId).orElseThrow();
-        List<OrderInfo> paid = new ArrayList<>();
+        List<Payee> paid = new ArrayList<>();
         String rejected = succeeded ? notAwaiting(payment, paid) : null;
         Payment settled = change(paymentId, p -> {
             if (!p.getStatus().open()) {
@@ -153,7 +160,7 @@ public class PaymentService {
                 p.fail(rejected, clock.instant());
             } else {
                 p.succeed(clock.instant());
-                paid.forEach(o -> earnings.save(new SellerEarning(o.id(), p.getId(), o.sellerId(), o.total(), clock.instant())));
+                paid.forEach(o -> earnings.save(new SellerEarning(o.id(), p.getId(), o.sellerId(), o.amount(), p.getReferenceType(), clock.instant())));
             }
             return p;
         });
@@ -163,7 +170,7 @@ public class PaymentService {
         return settled;
     }
 
-    /** Ponawia oznaczenie zamówień jako opłaconych dla udanych płatności, których order-service jeszcze nie przyjął. */
+    /** Ponawia oznaczenie zamówień (rezerwacji) jako opłaconych dla udanych płatności, których serwis jeszcze nie przyjął. */
     @Scheduled(fixedDelayString = "${rynek.payments.confirm-retry:60s}", initialDelayString = "${rynek.payments.confirm-retry:60s}")
     public void confirmPending() {
         payments.findUnconfirmed().forEach(this::confirmOrders);
@@ -172,23 +179,28 @@ public class PaymentService {
     private Payment confirmOrders(UUID paymentId) {
         Payment payment = payments.findById(paymentId).orElseThrow();
         boolean done = true;
-        for (UUID orderId : payment.getReferences()) {
-            MarkPaid result = orders.markPaid(orderId, paymentId);
+        boolean booking = payment.getReferenceType() == ReferenceType.BOOKING;
+        for (UUID referenceId : payment.getReferences()) {
+            MarkPaid result = booking ? bookings.markPaid(referenceId, paymentId) : orders.markPaid(referenceId, paymentId);
             if (result == MarkPaid.UNAVAILABLE) {
                 done = false;
             } else if (result == MarkPaid.REJECTED) {
-                // Zamówienie anulowano między sprawdzeniem a zaksięgowaniem: pieniądze za nie wracają do kupującego.
-                log.warn("Płatność {} zaksięgowana, ale zamówienie {} odrzuciło mark-paid: zwracamy pieniądze", paymentId, orderId);
+                // Anulowano między sprawdzeniem a zaksięgowaniem: pieniądze wracają do płacącego.
+                log.warn("Płatność {} zaksięgowana, ale {} odrzuciło mark-paid: zwracamy pieniądze", paymentId, referenceId);
                 try {
-                    refunds.orderCancelled(orderId);
+                    if (booking) {
+                        refunds.bookingCancelled(referenceId);
+                    } else {
+                        refunds.orderCancelled(referenceId);
+                    }
                 } catch (RuntimeException e) {
-                    // order-service i tak zgłosi anulowanie, a zwrot ma klucz cancel:<orderId>, więc nie pójdzie dwa razy.
-                    log.error("Płatność {}: zwrot za zamówienie {} się nie udał, ponowi go zgłoszenie z order-service", paymentId, orderId, e);
+                    // Serwis i tak zgłosi anulowanie, a zwrot ma klucz cancel:<id>, więc nie pójdzie dwa razy.
+                    log.error("Płatność {}: zwrot za {} się nie udał, ponowi go zgłoszenie anulowania", paymentId, referenceId, e);
                 }
             }
         }
         if (!done) {
-            log.warn("Płatność {}: order-service nie odpowiada, ponowimy oznaczenie zamówień", paymentId);
+            log.warn("Płatność {}: serwis zamówień albo rezerwacji nie odpowiada, ponowimy oznaczenie", paymentId);
             return payment;
         }
         return change(paymentId, p -> {
@@ -197,16 +209,30 @@ public class PaymentService {
         });
     }
 
-    /** Powód odrzucenia albo {@code null}, gdy wszystkie zamówienia czekają; te trafiają do {@code awaiting}. */
-    private String notAwaiting(Payment payment, List<OrderInfo> awaiting) {
-        for (UUID orderId : payment.getReferences()) {
-            Optional<OrderInfo> order = orders.order(orderId);
-            if (order.isEmpty() || !order.get().awaitingPayment()) {
-                return "Zamówienie " + order.map(OrderInfo::number).orElse("") + " zostało anulowane albo wygasło. Nie pobraliśmy pieniędzy.";
+    /** Powód odrzucenia albo {@code null}, gdy wszystko nadal czeka na płatność; to trafia do {@code awaiting}. */
+    private String notAwaiting(Payment payment, List<Payee> awaiting) {
+        for (UUID referenceId : payment.getReferences()) {
+            Optional<Payee> payee = payee(payment.getReferenceType(), referenceId);
+            if (payee.isEmpty() || !payee.get().awaiting()) {
+                return payment.getReferenceType() == ReferenceType.BOOKING
+                        ? "Rezerwacja została anulowana albo wygasła. Nie pobraliśmy pieniędzy."
+                        : payee.map(Payee::label).orElse("Zamówienie") + " zostało anulowane albo wygasło. Nie pobraliśmy pieniędzy.";
             }
-            awaiting.add(order.get());
+            awaiting.add(payee.get());
         }
         return null;
+    }
+
+    /** Za co się płaci: zamówienie (kwota zamówienia, sprzedawca) albo rezerwacja (zaliczka, usługodawca). */
+    record Payee(UUID id, UUID buyerId, UUID sellerId, long amount, boolean awaiting, String label) {
+    }
+
+    private Optional<Payee> payee(ReferenceType type, UUID id) {
+        if (type == ReferenceType.BOOKING) {
+            return bookings.booking(id).map(b -> new Payee(b.id(), b.customerId(), b.providerId(), b.deposit(), b.awaitingDeposit(),
+                    "Rezerwacja „" + b.title() + "”"));
+        }
+        return orders.order(id).map(o -> new Payee(o.id(), o.buyerId(), o.sellerId(), o.total(), o.awaitingPayment(), "Zamówienie " + o.number()));
     }
 
     private <T> T change(UUID paymentId, java.util.function.Function<Payment, T> action) {
@@ -224,14 +250,14 @@ public class PaymentService {
 
     private static List<UUID> parse(String referenceIds) {
         if (referenceIds == null || referenceIds.isBlank()) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Podaj zamówienie do opłacenia.");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Podaj zamówienie albo rezerwację do opłacenia.");
         }
         List<UUID> ids = new ArrayList<>();
         try {
             Arrays.stream(referenceIds.split(",")).map(String::trim).filter(s -> !s.isEmpty()).map(UUID::fromString)
                     .distinct().forEach(ids::add);
         } catch (IllegalArgumentException e) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nieprawidłowe id zamówienia.");
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Nieprawidłowe id zamówienia albo rezerwacji.");
         }
         if (ids.isEmpty() || ids.size() > MAX_REFERENCES) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Jedna płatność obejmuje od 1 do " + MAX_REFERENCES + " zamówień.");

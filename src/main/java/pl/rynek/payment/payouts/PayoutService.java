@@ -14,8 +14,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
+import pl.rynek.payment.clients.BookingClient;
 import pl.rynek.payment.clients.OrderClient;
 import pl.rynek.payment.clients.OrderClient.OrderInfo;
+import pl.rynek.payment.payments.ReferenceType;
 import pl.rynek.payment.payments.SellerEarningRepository;
 import pl.rynek.payment.provider.PaymentProvider;
 
@@ -27,8 +29,9 @@ import pl.rynek.payment.provider.PaymentProvider;
  *   wtedy kolejne wypłaty czekają, aż saldo wróci powyżej minimum.</li>
  *   <li>Wypłaty idą automatycznie ({@code rynek.payouts.cron}, domyślnie codziennie o 6:00) na zapisany rachunek.</li>
  * </ul>
- * O realizacji zamówienia payment-service dowiaduje się z order-service przy odczycie salda i przed wypłatą
- * (zamiast zdarzenia {@code order.completed}). Prowizji Rynku jeszcze nie ma (decyzja biznesowa).
+ * O realizacji zamówienia (wykonaniu usługi z zaliczką) payment-service dowiaduje się z order-service (booking-service)
+ * przy odczycie salda i przed wypłatą, zamiast zdarzeń {@code order.completed} i {@code booking.completed}. Prowizji Rynku
+ * jeszcze nie ma (decyzja biznesowa).
  */
 @Service
 public class PayoutService {
@@ -39,18 +42,20 @@ public class PayoutService {
     private final PayoutRepository payouts;
     private final PayoutAccountRepository accounts;
     private final OrderClient orders;
+    private final BookingClient bookings;
     private final PaymentProvider provider;
     private final TransactionTemplate transaction;
     private final Clock clock;
     private final long minimum;
 
     public PayoutService(SellerEarningRepository earnings, PayoutRepository payouts, PayoutAccountRepository accounts, OrderClient orders,
-                         PaymentProvider provider, PlatformTransactionManager transactions, Clock clock,
+                         BookingClient bookings, PaymentProvider provider, PlatformTransactionManager transactions, Clock clock,
                          @Value("${rynek.payouts.minimum:100}") long minimum) {
         this.earnings = earnings;
         this.payouts = payouts;
         this.accounts = accounts;
         this.orders = orders;
+        this.bookings = bookings;
         this.provider = provider;
         this.transaction = new TransactionTemplate(transactions);
         this.clock = clock;
@@ -123,18 +128,28 @@ public class PayoutService {
         }
     }
 
-    /** Środki z zamówień zrealizowanych stają się dostępne. Bez order-service zostają oczekujące do następnego razu. */
+    /**
+     * Środki z zamówień zrealizowanych i usług wykonanych stają się dostępne. Bez order-service (booking-service) zostają
+     * oczekujące do następnego razu.
+     */
     private void refreshReleases(UUID sellerId) {
-        List<UUID> unreleased = earnings.findUnreleasedOrderIds(sellerId);
-        if (unreleased.isEmpty()) {
-            return;
-        }
-        List<UUID> completed;
+        List<UUID> completed = new java.util.ArrayList<>();
+        List<UUID> unreleasedOrders = earnings.findUnreleasedIds(sellerId, ReferenceType.ORDER);
+        List<UUID> unreleasedBookings = earnings.findUnreleasedIds(sellerId, ReferenceType.BOOKING);
         try {
-            completed = orders.orders(unreleased).stream().filter(OrderInfo::completed).map(OrderInfo::id).toList();
+            if (!unreleasedOrders.isEmpty()) {
+                orders.orders(unreleasedOrders).stream().filter(OrderInfo::completed).map(OrderInfo::id).forEach(completed::add);
+            }
         } catch (ResponseStatusException e) {
             log.warn("Saldo sprzedawcy {}: order-service nie odpowiada, statusy zamówień z poprzedniego odczytu", sellerId);
-            return;
+        }
+        try {
+            if (!unreleasedBookings.isEmpty()) {
+                bookings.bookings(unreleasedBookings).stream().filter(BookingClient.BookingInfo::completed)
+                        .map(BookingClient.BookingInfo::id).forEach(completed::add);
+            }
+        } catch (ResponseStatusException e) {
+            log.warn("Saldo usługodawcy {}: booking-service nie odpowiada, statusy rezerwacji z poprzedniego odczytu", sellerId);
         }
         if (!completed.isEmpty()) {
             transaction.executeWithoutResult(status -> earnings.release(completed, clock.instant()));

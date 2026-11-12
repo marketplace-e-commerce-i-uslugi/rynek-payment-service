@@ -30,6 +30,7 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     /** Zaksięgowane płatności, w których któreś zamówienie nie ma przychodu sprzedawcy (sprzed wprowadzenia salda). */
     @Query("select distinct p.id from Payment p join p.references r"
             + " where p.status in (pl.rynek.payment.payments.PaymentStatus.SUCCEEDED, pl.rynek.payment.payments.PaymentStatus.REFUNDED)"
+            + " and p.referenceType = pl.rynek.payment.payments.ReferenceType.ORDER"
             + " and not exists (select e.orderId from SellerEarning e where e.orderId = r)")
     List<UUID> findWithoutEarnings();
 

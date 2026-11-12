@@ -37,6 +37,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import pl.rynek.payment.TestcontainersConfig;
+import pl.rynek.payment.clients.BookingClient;
 import pl.rynek.payment.clients.OrderClient;
 import pl.rynek.payment.clients.OrderClient.MarkPaid;
 import pl.rynek.payment.clients.OrderClient.OrderInfo;
@@ -76,6 +77,9 @@ class RefundAndPayoutTests {
 
     @MockitoBean
     OrderClient orders;
+
+    @MockitoBean
+    BookingClient bookingClient;
 
     final Map<UUID, OrderInfo> known = new ConcurrentHashMap<>();
     volatile MarkPaid markPaidResult = MarkPaid.OK;

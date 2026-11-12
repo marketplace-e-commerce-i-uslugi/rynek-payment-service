@@ -37,6 +37,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import pl.rynek.payment.TestcontainersConfig;
+import pl.rynek.payment.clients.BookingClient;
 import pl.rynek.payment.clients.OrderClient;
 import pl.rynek.payment.clients.OrderClient.MarkPaid;
 import pl.rynek.payment.clients.OrderClient.OrderInfo;
@@ -70,6 +71,9 @@ class PaymentFlowTests {
 
     @MockitoBean
     OrderClient orders;
+
+    @MockitoBean
+    BookingClient bookingClient;
 
     final Map<UUID, OrderInfo> known = new ConcurrentHashMap<>();
     volatile MarkPaid markPaidResult = MarkPaid.OK;
@@ -164,8 +168,8 @@ class PaymentFlowTests {
         pay(buyer, "k3", "nie-uuid", "BLIK").andExpect(status().isBadRequest());
         mvc.perform(post("/api/v1/payments").header(HttpHeaders.AUTHORIZATION, bearer(buyer)).header("Idempotency-Key", "k4")
                         .contentType(MediaType.APPLICATION_JSON).content("{\"referenceType\":\"BOOKING\",\"referenceId\":\"" + mine + "\",\"method\":\"BLIK\"}"))
-                .andExpect(status().isUnprocessableContent())
-                .andExpect(jsonPath("$.detail").value("Płatności za rezerwacje jeszcze nie obsługujemy."));
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.detail").value("Nie znaleźliśmy tej rezerwacji."));
         mvc.perform(post("/api/v1/payments").header(HttpHeaders.AUTHORIZATION, bearer(buyer)).contentType(MediaType.APPLICATION_JSON)
                         .content(body(mine.toString(), "BLIK")))
                 .andExpect(status().isBadRequest())

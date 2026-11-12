@@ -77,6 +77,9 @@ public class SandboxController {
     }
 
     private URI returnUrl(Payment payment) {
+        if (payment.getReferenceType() == pl.rynek.payment.payments.ReferenceType.BOOKING) {
+            return URI.create(frontendUrl + "/zamowienie/potwierdzenie?payment=" + payment.getId() + "&booking=" + payment.getReferences().getFirst());
+        }
         String orders = payment.getReferences().stream().map(UUID::toString).collect(Collectors.joining(","));
         return URI.create(frontendUrl + "/zamowienie/potwierdzenie?payment=" + payment.getId() + "&orders=" + orders);
     }

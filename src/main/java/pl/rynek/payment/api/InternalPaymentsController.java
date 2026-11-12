@@ -27,4 +27,14 @@ public class InternalPaymentsController {
     public void orderCancelled(@PathVariable UUID orderId) {
         refunds.orderCancelled(orderId);
     }
+
+    /**
+     * Rezerwacja anulowana albo wygasła (booking-service, zamiast zdarzenia {@code booking.cancelled}): wpłacona zaliczka
+     * wraca w całości, a płatność w toku jest nieudana. Idempotentne; 503 = ponów. Dostęp: int.
+     */
+    @PostMapping("/internal/bookings/{bookingId}/cancelled")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void bookingCancelled(@PathVariable UUID bookingId) {
+        refunds.bookingCancelled(bookingId);
+    }
 }

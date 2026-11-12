@@ -18,6 +18,8 @@ spring:
 rynek:
   order:
     url: ${ORDER_SERVICE_URL:http://localhost:8091}
+  booking:
+    url: ${BOOKING_SERVICE_URL:http://localhost:8093}
   payments:
     # Dostawca płatności za interfejsem PaymentProvider. Na razie jest tylko „sandbox” (symulator bez prawdziwych
     # pieniędzy); prawdziwy dostawca (Przelewy24 / PayU / Stripe) to decyzja biznesowa.

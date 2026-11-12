@@ -38,6 +38,8 @@ public class RefundService {
     private static final Logger log = LoggerFactory.getLogger(RefundService.class);
     static final String CANCELLED_REASON = "Zamówienie zostało anulowane.";
     static final String VOIDED_REASON = "Zamówienie zostało anulowane albo wygasło. Nie pobraliśmy pieniędzy.";
+    static final String BOOKING_CANCELLED_REASON = "Rezerwacja została anulowana.";
+    static final String BOOKING_VOIDED_REASON = "Rezerwacja została anulowana albo wygasła. Nie pobraliśmy pieniędzy.";
 
     private final PaymentRepository payments;
     private final SellerEarningRepository earnings;
@@ -83,11 +85,14 @@ public class RefundService {
         if (!admin && !earning.getSellerId().equals(callerId)) {
             throw paymentNotFound();
         }
-        OrderInfo order = orders.order(target)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy tego zamówienia."));
-        if ("TO_SHIP".equals(order.status())) {
-            throw new ResponseStatusException(HttpStatus.CONFLICT,
-                    "Zamówienie " + order.number() + " nie zostało jeszcze wysłane. Anuluj je, a pieniądze wrócą do kupującego automatycznie.");
+        // Zaliczka za rezerwację wraca sama po anulowaniu; ręczny zwrot (np. po wykonanej usłudze) nie zależy od zamówień.
+        if (payment.getReferenceType() == ReferenceType.ORDER) {
+            OrderInfo order = orders.order(target)
+                    .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy tego zamówienia."));
+            if ("TO_SHIP".equals(order.status())) {
+                throw new ResponseStatusException(HttpStatus.CONFLICT,
+                        "Zamówienie " + order.number() + " nie zostało jeszcze wysłane. Anuluj je, a pieniądze wrócą do kupującego automatycznie.");
+            }
         }
         String why = reason != null && !reason.isBlank() ? reason.trim()
                 : admin && !earning.getSellerId().equals(callerId) ? "Zwrot przez obsługę Rynku." : "Zwrot od sprzedawcy.";
@@ -121,18 +126,27 @@ public class RefundService {
      * daje 503, żeby order-service ponowił zgłoszenie.
      */
     public void orderCancelled(UUID orderId) {
+        cancelled(orderId, VOIDED_REASON, CANCELLED_REASON);
+    }
+
+    /** Rezerwacja anulowana albo wygasła (booking-service): zaliczka wraca w całości, płatność w toku jest nieudana. */
+    public void bookingCancelled(UUID bookingId) {
+        cancelled(bookingId, BOOKING_VOIDED_REASON, BOOKING_CANCELLED_REASON);
+    }
+
+    private void cancelled(UUID referenceId, String voidReason, String refundReason) {
         try {
-            transaction.executeWithoutResult(status -> payments.findOpenFor(List.of(orderId))
-                    .forEach(p -> p.fail(VOIDED_REASON, clock.instant())));
+            transaction.executeWithoutResult(status -> payments.findOpenFor(List.of(referenceId))
+                    .forEach(p -> p.fail(voidReason, clock.instant())));
         } catch (ObjectOptimisticLockingFailureException e) {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "Płatność właśnie się rozlicza. Spróbuj ponownie.");
         }
-        for (Payment payment : payments.findSettledFor(orderId)) {
-            if (earning(payment, orderId).refundable() == 0) {
+        for (Payment payment : payments.findSettledFor(referenceId)) {
+            if (earning(payment, referenceId).refundable() == 0) {
                 continue;
             }
             try {
-                apply(payment.getId(), orderId, null, CANCELLED_REASON, null, "cancel:" + orderId);
+                apply(payment.getId(), referenceId, null, refundReason, null, "cancel:" + referenceId);
             } catch (ResponseStatusException e) {
                 if (e.getStatusCode() != HttpStatus.CONFLICT) {
                     throw e;
@@ -206,6 +220,10 @@ public class RefundService {
         Optional<SellerEarning> known = earnings.findById(orderId);
         if (known.isPresent()) {
             return known.get();
+        }
+        if (payment.getReferenceType() == ReferenceType.BOOKING) {
+            // Zaliczki mają przychód od początku; brak oznacza błąd danych, nie płatność sprzed salda.
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy przychodu z tej rezerwacji.");
         }
         OrderInfo order = orders.order(orderId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie znaleźliśmy tego zamówienia."));
