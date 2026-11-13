@@ -246,6 +246,7 @@ class RefundAndPayoutTests {
     void payoutAccountIsValidatedAndAvailableFundsArePaidOut() throws Exception {
         UUID buyer = UUID.randomUUID();
         UUID seller = UUID.randomUUID();
+        mvc.perform(get("/api/v1/seller/payout-account").header(HttpHeaders.AUTHORIZATION, bearer(seller))).andExpect(status().isNotFound());
         account(seller, "{\"holder\":\"Elektro-Market\",\"iban\":\"PL61 1090 1014 0000 0712 1981 2875\"}").andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.detail").value("Numer rachunku jest nieprawidłowy. Sprawdź jego cyfry."));
         account(seller, "{\"holder\":\" \",\"iban\":\"" + IBAN + "\"}").andExpect(status().isBadRequest());
@@ -254,6 +255,8 @@ class RefundAndPayoutTests {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.holder").value("Elektro-Market Sp. z o.o."))
                 .andExpect(jsonPath("$.iban").value(IBAN));
+        mvc.perform(get("/api/v1/seller/payout-account").header(HttpHeaders.AUTHORIZATION, bearer(seller))).andExpect(status().isOk())
+                .andExpect(jsonPath("$.holder").value("Elektro-Market Sp. z o.o.")).andExpect(jsonPath("$.iban").value(IBAN));
 
         UUID done = order(buyer, seller, 20000);
         UUID inTransit = order(buyer, seller, 3000);

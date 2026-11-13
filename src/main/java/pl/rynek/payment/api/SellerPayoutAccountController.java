@@ -5,6 +5,7 @@ import java.util.UUID;
 import jakarta.validation.Valid;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
@@ -19,6 +20,14 @@ public class SellerPayoutAccountController {
 
     public SellerPayoutAccountController(PayoutService payouts) {
         this.payouts = payouts;
+    }
+
+    /**
+     * Zapisany rachunek do wypłat (endpoint spoza dokumentu architektury). 404, gdy sprzedawca go nie dodał. Dostęp: seller.
+     */
+    @GetMapping("/api/v1/seller/payout-account")
+    public PayoutAccountResponse getPayoutAccount(@AuthenticationPrincipal Jwt token) {
+        return PayoutAccountResponse.of(payouts.account(UUID.fromString(token.getSubject())));
     }
 
     /**

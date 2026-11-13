@@ -30,6 +30,7 @@ Ekrany: 8 Płatność, 9 Panel (przychód). Zalecenie: jeden dostawca płatnośc
 | POST | `/api/v1/payments/{paymentId}/refund` | Zwrot środków | seller / admin |
 | GET | `/api/v1/seller/payouts` | Historia wypłat | seller |
 | GET | `/api/v1/seller/balance` | Saldo i środki oczekujące | seller |
+| GET | `/api/v1/seller/payout-account` | Zapisany rachunek do wypłat, 404 gdy go nie ma (poza dokumentem architektury) | seller |
 | PUT | `/api/v1/seller/payout-account` | Rachunek do wypłat | seller |
 | GET, POST | `/api/v1/payments/sandbox/{paymentId}` | Strona symulatora dostawcy dla karty i przelewu (tylko `provider=sandbox`) | pub |
 | POST | `/internal/bookings/{bookingId}/cancelled` | Rezerwacja anulowana albo wygasła: zwrot zaliczki, płatności w toku `FAILED` | int |
@@ -62,7 +63,7 @@ Ekrany: 8 Płatność, 9 Panel (przychód). Zalecenie: jeden dostawca płatnośc
 
 - Zaksięgowanie płatności zapisuje przychód każdego sprzedawcy z zamówienia (`seller_earnings`). Płatności zaksięgowane przed wprowadzeniem salda dostają przychód automatycznie: co `rynek.payments.earnings-backfill` (60 s) kwotę i sprzedawcę podaje order-service. Przy zwrocie przychód jest uzupełniany od razu.
 - `GET /seller/balance {available, pending}`. `pending`: opłacone zamówienia jeszcze niezrealizowane, minus zwroty. `available`: zamówienia „Zrealizowane” minus zwroty i wszystkie wypłaty. Zwrot po wypłacie może dać ujemne `available`, a wtedy kolejna wypłata czeka. Statusy zamówień payment-service czyta z order-service (`GET /internal/orders?ids=`) przy odczycie salda i przed wypłatą, zamiast słuchać `order.completed`. Gdy order-service nie odpowiada, saldo liczy się z ostatnio znanych statusów.
-- `PUT /seller/payout-account {holder, iban}`: IBAN z sumą kontrolną mod 97 (sam 26-cyfrowy numer dostaje `PL`), odpowiedź zwraca IBAN w grupach po 4 znaki. Endpointu do odczytu rachunku nie ma w specyfikacji, więc formularz we frontendzie startuje pusty.
+- `PUT /seller/payout-account {holder, iban}`: IBAN z sumą kontrolną mod 97 (sam 26-cyfrowy numer dostaje `PL`), odpowiedź zwraca IBAN w grupach po 4 znaki. `GET /seller/payout-account` (endpoint spoza dokumentu architektury) zwraca zapisany rachunek albo 404, a formularz we frontendzie wypełnia się z niego przy wejściu na stronę.
 - Wypłaty są automatyczne, a w specyfikacji nie ma endpointu do ich zlecania. `rynek.payouts.cron` (domyślnie codziennie o 6:00, `PAYOUTS_CRON`) wypłaca całe `available` (co najmniej `rynek.payouts.minimum`, domyślnie 1 zł) na zapisany rachunek. Bez rachunku wypłaty nie ma. Status „W realizacji” zmienia się na „Wypłacono”, gdy przelew dotrze (w `sandbox` po `rynek.payouts.sandbox-transfer-time`, domyślnie 1 dzień). `GET /seller/payouts`: kursor `{items, nextCursor}`, od najnowszej.
 - Prowizji Rynku i okresu karencji po realizacji (np. 14 dni na odstąpienie od umowy) jeszcze nie ma, bo to decyzje biznesowe. Przebieg wypłat zakłada jedną instancję serwisu, choć blokada rachunku chroni przed podwójną wypłatą. Przy wielu instancjach trzeba dodać blokadę harmonogramu (np. ShedLock).
 

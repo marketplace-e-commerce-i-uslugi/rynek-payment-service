@@ -75,6 +75,11 @@ public class PayoutService {
         return payouts.findOfSeller(sellerId, offset, limit);
     }
 
+    /** Zapisany rachunek sprzedawcy; 404, gdy go jeszcze nie ma (formularz zostaje wtedy pusty). */
+    public PayoutAccount account(UUID sellerId) {
+        return accounts.findById(sellerId).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Nie dodano jeszcze rachunku do wypłat."));
+    }
+
     public PayoutAccount setAccount(UUID sellerId, String holder, String rawIban) {
         String name = holder == null ? "" : holder.trim().replaceAll("\\s+", " ");
         if (name.length() < 2 || name.length() > 100) {
