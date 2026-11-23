@@ -3,6 +3,8 @@ package pl.rynek.payment.api;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.BDDMockito.given;
 import static org.mockito.Mockito.verify;
@@ -50,7 +52,7 @@ import pl.rynek.payment.payouts.PayoutService;
  * Zwroty, saldo i wypłaty na prawdziwym PostgreSQL. Atrapa order-service trzyma zamówienia w mapie, więc test zmienia
  * ich status (wysłane, zrealizowane, anulowane) jak sprzedawca. Przelew wypłaty w symulatorze dociera od razu.
  */
-@SpringBootTest(properties = {"rynek.payments.confirm-retry=1h", "rynek.payments.earnings-backfill=1h", "rynek.payments.refund-notify-retry=1h", "rynek.payouts.cron=-", "rynek.payouts.sandbox-transfer-time=0s"})
+@SpringBootTest(properties = {"rynek.payments.commission-percent=0", "rynek.payments.confirm-retry=1h", "rynek.payments.earnings-backfill=1h", "rynek.payments.refund-notify-retry=1h", "rynek.payouts.cron=-", "rynek.payouts.sandbox-transfer-time=0s"})
 @AutoConfigureMockMvc
 @Import(TestcontainersConfig.class)
 class RefundAndPayoutTests {
@@ -97,7 +99,7 @@ class RefundAndPayoutTests {
                     .issuedAt(Instant.now()).expiresAt(Instant.now().plusSeconds(900)).build();
         });
         given(orders.order(any())).willAnswer(call -> Optional.ofNullable(known.get(call.<UUID>getArgument(0))));
-        given(orders.refunded(any())).willReturn(true);
+        given(orders.refunded(any(), anyBoolean())).willReturn(true);
         given(orders.orders(any())).willAnswer(call -> call.<List<UUID>>getArgument(0).stream().map(known::get)
                 .filter(o -> o != null).toList());
         given(orders.markPaid(any(), any())).willAnswer(call -> {
@@ -161,20 +163,20 @@ class RefundAndPayoutTests {
         String payment = paidWithBlik(buyer, returned.toString());
         setStatus(returned, "COMPLETED");
         // order-service nie odpowiada: zwrot się udaje, a zgłoszenie czeka.
-        given(orders.refunded(returned)).willReturn(false);
+        given(orders.refunded(eq(returned), anyBoolean())).willReturn(false);
         refund(seller, payment, null, "{}").andExpect(status().isOk());
-        verify(orders, times(1)).refunded(returned);
-        given(orders.refunded(returned)).willReturn(true);
+        verify(orders, times(1)).refunded(eq(returned), anyBoolean());
+        given(orders.refunded(eq(returned), anyBoolean())).willReturn(true);
         refunds.notifyOrders();
         refunds.notifyOrders();
-        verify(orders, times(2)).refunded(returned);
+        verify(orders, times(2)).refunded(eq(returned), anyBoolean());
 
         UUID cancelled = order(buyer, seller, 4000);
         paidWithBlik(buyer, cancelled.toString());
         setStatus(cancelled, "CANCELLED");
         mvc.perform(post("/internal/orders/" + cancelled + "/cancelled")).andExpect(status().isNoContent());
         refunds.notifyOrders();
-        verify(orders, never()).refunded(cancelled);
+        verify(orders, never()).refunded(eq(cancelled), anyBoolean());
     }
 
     @Test

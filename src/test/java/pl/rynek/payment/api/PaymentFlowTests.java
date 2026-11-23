@@ -49,7 +49,7 @@ import pl.rynek.payment.provider.WebhookSignature;
  * Płatności na prawdziwym PostgreSQL z dostawcą „sandbox”. Atrapa order-service trzyma zamówienia w mapie, więc test
  * może je anulować albo udawać, że order-service nie odpowiada.
  */
-@SpringBootTest(properties = {"rynek.payments.confirm-retry=1h", "rynek.payments.earnings-backfill=1h", "rynek.payments.refund-notify-retry=1h"})
+@SpringBootTest(properties = {"rynek.payments.commission-percent=0", "rynek.payments.confirm-retry=1h", "rynek.payments.earnings-backfill=1h", "rynek.payments.refund-notify-retry=1h"})
 @AutoConfigureMockMvc
 @Import(TestcontainersConfig.class)
 class PaymentFlowTests {

@@ -109,7 +109,8 @@ public class RefundService {
     public void notifyOrders() {
         for (UUID refundId : refunds.findOrderUnnotified()) {
             Refund refund = refunds.findById(refundId).orElseThrow();
-            if (!orders.refunded(refund.getOrderId())) {
+            boolean full = earnings.findById(refund.getOrderId()).map(e -> e.refundable() == 0).orElse(false);
+            if (!orders.refunded(refund.getOrderId(), full)) {
                 log.warn("Zwrot {}: order-service nie odpowiada, ponowimy zgłoszenie", refundId);
                 return;
             }

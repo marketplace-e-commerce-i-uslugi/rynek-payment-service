@@ -79,11 +79,11 @@ public class OrderClient {
 
     /**
      * Zwrot pieniędzy za zamówienie: zgłoszony zwrot staje się przyjęty. {@code false}: order-service nie odpowiada,
-     * trzeba ponowić; odrzucenie 4xx nie ma sensu ponawiać, więc też jest {@code true}.
+     * trzeba ponowić; odrzucenie 4xx nie ma sensu ponawiać, więc też jest {@code true}. {@code full}: zwrócono całość kwoty zamówienia.
      */
-    public boolean refunded(UUID orderId) {
+    public boolean refunded(UUID orderId, boolean full) {
         try {
-            http.post().uri("/internal/orders/{id}/refunded", orderId).retrieve().toBodilessEntity();
+            http.post().uri("/internal/orders/{id}/refunded?full={full}", orderId, full).retrieve().toBodilessEntity();
             return true;
         } catch (HttpClientErrorException e) {
             return true;
@@ -97,7 +97,12 @@ public class OrderClient {
     }
 
     /** {@code status} to nazwa stałej z order-service, np. {@code AWAITING_PAYMENT}. */
-    public record OrderInfo(UUID id, String number, UUID buyerId, UUID sellerId, String status, long total) {
+    public record OrderInfo(UUID id, String number, UUID buyerId, UUID sellerId, String status, long total, long itemsTotal) {
+
+        /** Bez osobnej wartości towarów prowizja liczy się od całej kwoty. */
+        public OrderInfo(UUID id, String number, UUID buyerId, UUID sellerId, String status, long total) {
+            this(id, number, buyerId, sellerId, status, total, total);
+        }
 
         public boolean awaitingPayment() {
             return "AWAITING_PAYMENT".equals(status);

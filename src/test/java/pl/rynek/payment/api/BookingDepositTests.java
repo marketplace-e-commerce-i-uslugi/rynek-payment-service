@@ -41,7 +41,7 @@ import pl.rynek.payment.clients.OrderClient.MarkPaid;
 import pl.rynek.payment.payments.SellerEarningRepository;
 
 /** Zaliczki za rezerwacje: płatność, oznaczenie wpłaty w booking-service, saldo usługodawcy i zwrot po anulowaniu. */
-@SpringBootTest(properties = {"rynek.payments.confirm-retry=1h", "rynek.payments.earnings-backfill=1h", "rynek.payments.refund-notify-retry=1h",
+@SpringBootTest(properties = {"rynek.payments.commission-percent=0", "rynek.payments.confirm-retry=1h", "rynek.payments.earnings-backfill=1h", "rynek.payments.refund-notify-retry=1h",
         "rynek.payouts.cron=-"})
 @AutoConfigureMockMvc
 @Import(TestcontainersConfig.class)

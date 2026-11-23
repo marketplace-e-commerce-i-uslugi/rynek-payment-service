@@ -71,6 +71,10 @@ public class PayoutService {
         return new Balance(available(sellerId), earnings.pending(sellerId));
     }
 
+    public List<pl.rynek.payment.payments.SellerEarning> earnings(UUID sellerId, int offset, int limit) {
+        return earnings.findOfSeller(sellerId, offset, limit);
+    }
+
     public List<Payout> history(UUID sellerId, int offset, int limit) {
         return payouts.findOfSeller(sellerId, offset, limit);
     }

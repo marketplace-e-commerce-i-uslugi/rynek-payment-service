@@ -43,9 +43,12 @@ public class PaymentService {
     private final PaymentProvider provider;
     private final TransactionTemplate transaction;
     private final Clock clock;
+    private final double commissionPercent;
 
     public PaymentService(PaymentRepository payments, SellerEarningRepository earnings, RefundService refunds, OrderClient orders,
-                          BookingClient bookings, PaymentProvider provider, PlatformTransactionManager transactions, Clock clock) {
+                          BookingClient bookings, PaymentProvider provider, PlatformTransactionManager transactions, Clock clock,
+                          @org.springframework.beans.factory.annotation.Value("${rynek.payments.commission-percent:10}") double commissionPercent) {
+        this.commissionPercent = commissionPercent;
         this.payments = payments;
         this.earnings = earnings;
         this.refunds = refunds;
@@ -160,7 +163,8 @@ public class PaymentService {
                 p.fail(rejected, clock.instant());
             } else {
                 p.succeed(clock.instant());
-                paid.forEach(o -> earnings.save(new SellerEarning(o.id(), p.getId(), o.sellerId(), o.amount(), p.getReferenceType(), clock.instant())));
+                paid.forEach(o -> earnings.save(new SellerEarning(o.id(), p.getId(), o.sellerId(), o.amount(), commission(o.commissionBase()),
+                        p.getReferenceType(), clock.instant())));
             }
             return p;
         });
@@ -224,15 +228,24 @@ public class PaymentService {
     }
 
     /** Za co się płaci: zamówienie (kwota zamówienia, sprzedawca) albo rezerwacja (zaliczka, usługodawca). */
-    record Payee(UUID id, UUID buyerId, UUID sellerId, long amount, boolean awaiting, String label) {
+    record Payee(UUID id, UUID buyerId, UUID sellerId, long amount, long commissionBase, boolean awaiting, String label) {
+    }
+
+    /** Prowizja platformy: stały procent ({@code rynek.payments.commission-percent}) od wartości towarów albo zaliczki. */
+    private long commission(long base) {
+        return Math.round(base * commissionPercent / 100.0);
+    }
+
+    public double commissionPercent() {
+        return commissionPercent;
     }
 
     private Optional<Payee> payee(ReferenceType type, UUID id) {
         if (type == ReferenceType.BOOKING) {
-            return bookings.booking(id).map(b -> new Payee(b.id(), b.customerId(), b.providerId(), b.deposit(), b.awaitingDeposit(),
+            return bookings.booking(id).map(b -> new Payee(b.id(), b.customerId(), b.providerId(), b.deposit(), b.deposit(), b.awaitingDeposit(),
                     "Rezerwacja „" + b.title() + "”"));
         }
-        return orders.order(id).map(o -> new Payee(o.id(), o.buyerId(), o.sellerId(), o.total(), o.awaitingPayment(), "Zamówienie " + o.number()));
+        return orders.order(id).map(o -> new Payee(o.id(), o.buyerId(), o.sellerId(), o.total(), o.itemsTotal(), o.awaitingPayment(), "Zamówienie " + o.number()));
     }
 
     private <T> T change(UUID paymentId, java.util.function.Function<Payment, T> action) {
